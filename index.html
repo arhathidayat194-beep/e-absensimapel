@@ -185,7 +185,7 @@
                     </div>
                     <div>
                         <label class="block text-xs font-semibold text-slate-400 uppercase mb-1">Password</label>
-                        <input type="password" id="guruFormPassword" required class="w-full px-4 py-2.5 clay-input text-sm" placeholder="••••••••">
+                        <input type="password" id="guruFormPassword" class="w-full px-4 py-2.5 clay-input text-sm" placeholder="••••••••">
                     </div>
                 </div>
                 <div class="pt-2 flex justify-end gap-3">
@@ -753,9 +753,10 @@
         };
 
         // INITIALIZATION
-        window.onload = function() {
+        window.onload = async function() {
             loadLocalState();
             syncUIBrand();
+            await fetchDataFromBackend();
 
             // Auto Set Current Month
             const now = new Date();
@@ -779,7 +780,38 @@
             }
         };
 
-        // LOCAL STORAGE HELPERS
+        // API & LOCAL STORAGE HELPERS
+        async function apiCall(action, payload = {}) {
+            if (!APP_SCRIPT_URL || APP_SCRIPT_URL.includes("YOUR_SCRIPT_ID")) {
+                return null;
+            }
+            try {
+                const response = await fetch(APP_SCRIPT_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({ action, ...payload })
+                });
+                return await response.json();
+            } catch (err) {
+                console.warn("API Sync Warning:", err);
+                return null;
+            }
+        }
+
+        async function fetchDataFromBackend() {
+            if (!APP_SCRIPT_URL || APP_SCRIPT_URL.includes("YOUR_SCRIPT_ID")) return;
+            const res = await apiCall("get_app_data");
+            if (res && res.success && res.data) {
+                if (res.data.guruList && res.data.guruList.length > 0) appData.guruList = res.data.guruList;
+                if (res.data.kelasList && res.data.kelasList.length > 0) appData.kelasList = res.data.kelasList;
+                if (res.data.siswaList && res.data.siswaList.length > 0) appData.siswaList = res.data.siswaList;
+                if (res.data.attendanceRecords) appData.attendanceRecords = res.data.attendanceRecords;
+                if (res.data.settings) appData.settings = { ...appData.settings, ...res.data.settings };
+                saveLocalState();
+                syncUIBrand();
+            }
+        }
+
         function loadLocalState() {
             const stored = localStorage.getItem('eabsensi_data');
             if (stored) {
@@ -1104,7 +1136,7 @@
                 document.getElementById('guruFormNama').value = g.nama;
                 document.getElementById('guruFormMapel').value = g.mapel;
                 document.getElementById('guruFormUsername').value = g.username;
-                document.getElementById('guruFormPassword').value = g.password;
+                document.getElementById('guruFormPassword').value = g.password || '';
                 document.getElementById('guruModalTitle').innerText = "Edit Data Guru";
             } else {
                 document.getElementById('guruForm').reset();
@@ -1121,16 +1153,19 @@
             const username = document.getElementById('guruFormUsername').value;
             const password = document.getElementById('guruFormPassword').value;
 
+            const guruObj = { id: id || ('G' + Date.now()), nama, mapel, username, password };
+
             if (id) {
                 const index = appData.guruList.findIndex(g => g.id === id);
-                appData.guruList[index] = { id, nama, mapel, username, password };
+                if (index !== -1) appData.guruList[index] = guruObj;
                 showToast("Data Guru diperbarui", "success");
             } else {
-                appData.guruList.push({ id: 'G' + Date.now(), nama, mapel, username, password });
+                appData.guruList.push(guruObj);
                 showToast("Guru baru ditambahkan", "success");
             }
 
             saveLocalState();
+            apiCall('save_guru', guruObj);
             closeModal('guruModal');
             renderDataGuru();
         }
@@ -1174,16 +1209,19 @@
             const id = document.getElementById('kelasFormId').value;
             const nama = document.getElementById('kelasFormNama').value;
 
+            const kelasObj = { id: id || ('K' + Date.now()), nama };
+
             if (id) {
                 const index = appData.kelasList.findIndex(k => k.id === id);
-                appData.kelasList[index] = { id, nama };
+                if (index !== -1) appData.kelasList[index] = kelasObj;
                 showToast("Data Kelas diperbarui", "success");
             } else {
-                appData.kelasList.push({ id: 'K' + Date.now(), nama });
+                appData.kelasList.push(kelasObj);
                 showToast("Kelas baru ditambahkan", "success");
             }
 
             saveLocalState();
+            apiCall('save_kelas', kelasObj);
             closeModal('kelasModal');
             renderDataKelas();
         }
@@ -1247,16 +1285,19 @@
             const nama = document.getElementById('siswaFormNama').value;
             const id_kelas = document.getElementById('siswaFormKelas').value;
 
+            const siswaObj = { id: id || ('S' + Date.now()), nis, nama, id_kelas };
+
             if (id) {
                 const index = appData.siswaList.findIndex(s => s.id === id);
-                appData.siswaList[index] = { id, nis, nama, id_kelas };
+                if (index !== -1) appData.siswaList[index] = siswaObj;
                 showToast("Data Siswa diperbarui", "success");
             } else {
-                appData.siswaList.push({ id: 'S' + Date.now(), nis, nama, id_kelas });
+                appData.siswaList.push(siswaObj);
                 showToast("Siswa baru ditambahkan", "success");
             }
 
             saveLocalState();
+            apiCall('save_siswa', siswaObj);
             closeModal('siswaModal');
             renderDataSiswa();
         }
@@ -1283,6 +1324,7 @@
 
             saveLocalState();
             syncUIBrand();
+            apiCall('save_settings', appData.settings);
             showToast("Pengaturan Madrasah berhasil disimpan", "success");
         }
 
@@ -1387,18 +1429,29 @@
             }
 
             const students = appData.siswaList.filter(s => s.id_kelas === kelasId);
+            const recordsToSend = [];
+
             students.forEach(s => {
                 const status = document.querySelector(`input[name="status_${s.id}"]:checked`).value;
-                appData.attendanceRecords.push({
+                const rec = {
                     id: 'A' + Date.now() + Math.random().toString(36).substr(2, 4),
                     tanggal: tanggal,
                     id_kelas: kelasId,
                     id_siswa: s.id,
                     status: status
-                });
+                };
+                appData.attendanceRecords.push(rec);
+                recordsToSend.push({ id_siswa: s.id, status: status });
             });
 
             saveLocalState();
+            apiCall('save_attendance', {
+                tanggal: tanggal,
+                id_kelas: kelasId,
+                records: recordsToSend,
+                user: currentUser ? currentUser.name : 'GURU'
+            });
+
             showToast("Presensi berhasil disimpan!", "success");
             switchTab('guru-dashboard');
         }
@@ -1596,28 +1649,56 @@
         }
 
         function openModal(modalId) {
-            document.getElementById(modalId).classList.remove('hidden');
+            const modal = document.getElementById(modalId);
+            if (!modal) return;
+            modal.classList.remove('hidden');
+            const card = modal.querySelector('.clay-card');
+            if (card) {
+                setTimeout(() => {
+                    card.classList.remove('scale-95', 'opacity-0');
+                    card.classList.add('scale-100', 'opacity-100');
+                }, 10);
+            }
         }
 
         function closeModal(modalId) {
-            document.getElementById(modalId).classList.add('hidden');
+            const modal = document.getElementById(modalId);
+            if (!modal) return;
+            const card = modal.querySelector('.clay-card');
+            if (card) {
+                card.classList.remove('scale-100', 'opacity-100');
+                card.classList.add('scale-95', 'opacity-0');
+            }
+            setTimeout(() => {
+                modal.classList.add('hidden');
+            }, 150);
         }
+
+        // Aliases for table edit buttons
+        function editGuru(id) { openGuruModal(id); }
+        function editKelas(id) { openKelasModal(id); }
+        function editSiswa(id) { openSiswaModal(id); }
 
         function confirmDelete(type, id) {
             const modal = document.getElementById('deleteModal');
             const btn = document.getElementById('confirmDeleteBtn');
-            btn.onclick = () => {
+            btn.onclick = async () => {
+                showLoading(true);
                 if (type === 'guru') {
                     appData.guruList = appData.guruList.filter(g => g.id !== id);
+                    await apiCall('delete_guru', { id: id });
                     renderDataGuru();
                 } else if (type === 'kelas') {
                     appData.kelasList = appData.kelasList.filter(k => k.id !== id);
+                    await apiCall('delete_kelas', { id: id });
                     renderDataKelas();
                 } else if (type === 'siswa') {
                     appData.siswaList = appData.siswaList.filter(s => s.id !== id);
+                    await apiCall('delete_siswa', { id: id });
                     renderDataSiswa();
                 }
                 saveLocalState();
+                showLoading(false);
                 closeModal('deleteModal');
                 showToast("Data berhasil dihapus", "success");
             };
